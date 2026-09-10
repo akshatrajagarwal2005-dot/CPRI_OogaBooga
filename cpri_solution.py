@@ -17,7 +17,7 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -30,7 +30,7 @@ from sklearn.metrics import (
     r2_score,
     recall_score,
 )
-from sklearn.model_selection import KFold, StratifiedGroupKFold
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
 
 RANDOM_SEED = 2409
@@ -50,13 +50,15 @@ INPUT_COLUMNS = OPERATING_COLUMNS + PRIMARY_SENSORS + [AUXILIARY_SENSOR]
 
 # Breakpoints and model structures selected with grouped/out-of-fold validation.
 SENSOR_TARGET_CONFIGS = [
-    (62.00, 46.30),
-    (61.95, 46.30),
-    (61.95, 45.90),
-    (62.00, 45.90),
-    (62.00, 45.00),
+    (64.00, 46.30),
+    (64.00, 45.90),
+    (63.95, 46.30),
+    (64.00, 45.00),
+    (63.95, 45.00),
 ]
-OPERATING_TARGET_CONFIGS = [(62.00, 45.00)]
+OPERATING_TARGET_CONFIGS = [(64.00, 45.00)]
+PRODUCTION_STRATEGY = "invalid_operating_only"
+RIDGE_ALPHA = 300.0
 
 
 def _require_columns(frame: pd.DataFrame, required: Iterable[str], name: str) -> None:
@@ -108,13 +110,13 @@ def load_data(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame, pd.
 
 
 def duplicate_mask(frame: pd.DataFrame) -> np.ndarray:
-    """Flag exact repeated measurement records; NaNs compare as equal in duplicated()."""
-    return frame.duplicated(INPUT_COLUMNS, keep=False).to_numpy()
+    """Flag repeated operating conditions, including conflicting sensor records."""
+    return frame.duplicated(OPERATING_COLUMNS, keep=False).to_numpy()
 
 
 def duplicate_groups(frame: pd.DataFrame) -> np.ndarray:
-    """Keep exact duplicates in one validation fold while leaving other rows independent."""
-    hashes = pd.util.hash_pandas_object(frame[INPUT_COLUMNS], index=False).astype(str)
+    """Keep every repeated operating condition in one validation fold."""
+    hashes = pd.util.hash_pandas_object(frame[OPERATING_COLUMNS], index=False).astype(str)
     counts = hashes.map(hashes.value_counts()).to_numpy()
     return np.where(counts > 1, "duplicate_" + hashes, "row_" + frame.index.astype(str))
 
@@ -278,17 +280,18 @@ def fit_target_ensemble(
     valid_train: pd.DataFrame,
     configs: list[tuple[float, float]],
     include_sensors: bool,
-) -> list[tuple[float, float, LinearRegression]]:
+    alpha: float = RIDGE_ALPHA,
+) -> list[tuple[float, float, Ridge]]:
     models = []
     for current_threshold, ambient_hinge in configs:
         design = regression_features(valid_train, current_threshold, ambient_hinge, include_sensors)
-        model = LinearRegression().fit(design, valid_train[TARGET_COLUMN])
+        model = Ridge(alpha=alpha).fit(design, valid_train[TARGET_COLUMN])
         models.append((current_threshold, ambient_hinge, model))
     return models
 
 
 def predict_target_ensemble(
-    models: list[tuple[float, float, LinearRegression]],
+    models: list[tuple[float, float, LinearRegression | Ridge]],
     frame: pd.DataFrame,
     include_sensors: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -320,10 +323,11 @@ def repair_primary_sensors(
 def cross_validate_regression(train: pd.DataFrame, folds: int = 10) -> dict[str, object]:
     valid = train.loc[train[LABEL_COLUMN].eq("Valid")].reset_index(drop=True)
     y = valid[TARGET_COLUMN].to_numpy(dtype=float)
-    splitter = KFold(n_splits=folds, shuffle=True, random_state=RANDOM_SEED)
+    groups = duplicate_groups(valid)
+    splitter = GroupKFold(n_splits=folds)
     prediction = np.zeros(len(valid), dtype=float)
 
-    for train_index, validation_index in splitter.split(valid):
+    for train_index, validation_index in splitter.split(valid, groups=groups):
         fold_train = valid.iloc[train_index]
         fold_validation = valid.iloc[validation_index]
         models = fit_target_ensemble(fold_train, SENSOR_TARGET_CONFIGS, include_sensors=True)
@@ -341,6 +345,91 @@ def cross_validate_regression(train: pd.DataFrame, folds: int = 10) -> dict[str,
         "r_squared": float(r2_score(y, prediction)),
         "maximum_absolute_error_celsius": float(np.max(np.abs(errors))),
         "mean_error_celsius": float(np.mean(errors)),
+    }
+
+
+def _regression_metrics(y: np.ndarray, prediction: np.ndarray) -> dict[str, float]:
+    """Return a consistent regression report for a non-empty evaluation population."""
+    errors = y - prediction
+    return {
+        "mae_celsius": float(mean_absolute_error(y, prediction)),
+        "rmse_celsius": float(math.sqrt(mean_squared_error(y, prediction))),
+        "r_squared": float(r2_score(y, prediction)),
+        "maximum_absolute_error_celsius": float(np.max(np.abs(errors))),
+        "mean_error_celsius": float(np.mean(errors)),
+    }
+
+
+def cross_validate_all_record_regression(train: pd.DataFrame, folds: int = 10) -> dict[str, object]:
+    """Evaluate the deployed repair-and-predict path on every labelled record.
+
+    The original report scored only historical Valid records.  The competition
+    requires a reference prediction for Invalid records too, so each fold fits
+    fault detection and target models on its training partition, repairs held-out
+    faulty sensors, and scores the exact production prediction path on all rows.
+    """
+    invalid = train[LABEL_COLUMN].eq("Invalid").to_numpy()
+    groups = duplicate_groups(train)
+    splitter = StratifiedGroupKFold(n_splits=folds, shuffle=True, random_state=RANDOM_SEED)
+    sensor_prediction = np.zeros(len(train), dtype=float)
+    operating_prediction = np.zeros(len(train), dtype=float)
+    predicted_invalid = np.zeros(len(train), dtype=bool)
+
+    for train_index, validation_index in splitter.split(train, invalid, groups):
+        fold_train = train.iloc[train_index].reset_index(drop=True)
+        fold_validation = train.iloc[validation_index].reset_index(drop=True)
+        fold_invalid = fold_train[LABEL_COLUMN].eq("Invalid").to_numpy()
+        valid_fit_mask = ~fold_invalid
+        sensor_models = fit_sensor_response_models(fold_train, valid_fit_mask)
+        structural = duplicate_mask(fold_train) | fold_train[PRIMARY_SENSORS].isna().any(axis=1).to_numpy()
+        _, train_scores = sensor_residuals(fold_train, sensor_models)
+        threshold, _ = calibrate_sensor_threshold(fold_invalid, structural, train_scores)
+
+        validation_classification = classify_records(fold_validation, sensor_models, threshold)
+        repaired_validation, _ = repair_primary_sensors(
+            fold_validation,
+            sensor_models,
+            validation_classification["sensor_residuals"],
+            threshold,
+        )
+        valid_train = fold_train.loc[valid_fit_mask].reset_index(drop=True)
+        sensor_models_target = fit_target_ensemble(valid_train, SENSOR_TARGET_CONFIGS, include_sensors=True)
+        operating_models_target = fit_target_ensemble(valid_train, OPERATING_TARGET_CONFIGS, include_sensors=False)
+        fold_sensor_prediction, _ = predict_target_ensemble(sensor_models_target, repaired_validation, include_sensors=True)
+        fold_operating_prediction, _ = predict_target_ensemble(
+            operating_models_target, fold_validation, include_sensors=False
+        )
+        sensor_prediction[validation_index] = fold_sensor_prediction
+        operating_prediction[validation_index] = fold_operating_prediction
+        predicted_invalid[validation_index] = np.asarray(validation_classification["invalid"], dtype=bool)
+
+    target = train[TARGET_COLUMN].to_numpy(dtype=float)
+    valid_mask = ~invalid
+    candidates = {
+        "repaired_sensor_model": sensor_prediction,
+        "invalid_operating_blend_25_percent": np.where(predicted_invalid, 0.75 * sensor_prediction + 0.25 * operating_prediction, sensor_prediction),
+        "invalid_operating_blend_50_percent": np.where(predicted_invalid, 0.50 * sensor_prediction + 0.50 * operating_prediction, sensor_prediction),
+        "invalid_operating_only": np.where(predicted_invalid, operating_prediction, sensor_prediction),
+    }
+    candidate_metrics = {
+        name: {
+            "all_records": _regression_metrics(target, values),
+            "valid_records": _regression_metrics(target[valid_mask], values[valid_mask]),
+            "invalid_records": _regression_metrics(target[invalid], values[invalid]),
+        }
+        for name, values in candidates.items()
+    }
+    chosen_name = PRODUCTION_STRATEGY
+    prediction = candidates[chosen_name]
+    return {
+        "population": "all historical records; fault detection and sensor repair refit within each fold",
+        "records": int(len(train)),
+        "folds": folds,
+        "selected_production_strategy": chosen_name,
+        "candidate_metrics": candidate_metrics,
+        "all_records": _regression_metrics(target, prediction),
+        "valid_records": {"records": int(valid_mask.sum()), **_regression_metrics(target[valid_mask], prediction[valid_mask])},
+        "invalid_records": {"records": int(invalid.sum()), **_regression_metrics(target[invalid], prediction[invalid])},
     }
 
 
@@ -383,6 +472,7 @@ def build_outputs(args: argparse.Namespace) -> dict[str, Path]:
 
     validity_cv = cross_validate_validity(train)
     regression_cv = cross_validate_regression(train)
+    all_record_regression_cv = cross_validate_all_record_regression(train)
     test_classification = classify_records(test, sensor_models, sensor_threshold)
 
     repaired_test, replaced_sensor_count = repair_primary_sensors(
@@ -399,7 +489,7 @@ def build_outputs(args: argparse.Namespace) -> dict[str, Path]:
     operating_target_models = fit_target_ensemble(
         valid_train, OPERATING_TARGET_CONFIGS, include_sensors=False
     )
-    prediction, ensemble_spread = predict_target_ensemble(
+    sensor_prediction, ensemble_spread = predict_target_ensemble(
         sensor_target_models, repaired_test, include_sensors=True
     )
     operating_prediction, _ = predict_target_ensemble(
@@ -407,6 +497,16 @@ def build_outputs(args: argparse.Namespace) -> dict[str, Path]:
     )
 
     invalid_test = np.asarray(test_classification["invalid"], dtype=bool)
+    prediction = sensor_prediction.copy()
+    selected_strategy = PRODUCTION_STRATEGY
+    if selected_strategy == "invalid_operating_only":
+        prediction = np.where(invalid_test, operating_prediction, prediction)
+    elif selected_strategy == "invalid_operating_blend_50_percent":
+        prediction = np.where(invalid_test, 0.50 * prediction + 0.50 * operating_prediction, prediction)
+    elif selected_strategy == "invalid_operating_blend_25_percent":
+        prediction = np.where(invalid_test, 0.75 * prediction + 0.25 * operating_prediction, prediction)
+    elif selected_strategy != "repaired_sensor_model":
+        raise AssertionError(f"Unknown production strategy: {selected_strategy}")
     labels = np.where(invalid_test, "Invalid", "Valid")
     result = pd.DataFrame(
         {
@@ -430,19 +530,19 @@ def build_outputs(args: argparse.Namespace) -> dict[str, Path]:
         + np.asarray(test_classification["primary_missing_count"], dtype=float) * 15.0
         + np.asarray(test_classification["duplicated"], dtype=float) * 5.0
         + replaced_sensor_count.astype(float) * 3.0
-        + np.abs(prediction - operating_prediction) / max(regression_cv["rmse_celsius"], 1e-9)
+        + np.abs(sensor_prediction - operating_prediction) / max(regression_cv["rmse_celsius"], 1e-9)
         + ensemble_spread / max(regression_cv["rmse_celsius"], 1e-9)
     )
     attention_order = np.lexsort((test[ID_COLUMN].astype(str).to_numpy(), -attention_score))
     top_attention = test.iloc[attention_order[:3]][ID_COLUMN].astype(str).tolist()
 
     explanation = (
-        "Historical labels were audited for missing primary sensors, exact duplicate measurements "
+        "Historical labels were audited for missing primary sensors, repeated operating conditions "
         "and sensor inconsistency. Linear response models learned expected S1-S3 behaviour from "
         "Valid tests, separating true operating regimes from sensor faults. Reference predictions "
         "use a regime-aware polynomial ensemble trained only on Valid records, with explicit load "
-        "and high-ambient transitions. Clearly faulty or missing sensors are replaced by expected "
-        "values before prediction. Grouped ten-fold validation, deterministic settings and automated "
+        "and high-ambient transitions. Valid rows use repaired sensor predictions; Invalid rows use "
+        "the operating-only fallback. Condition-grouped validation, deterministic settings and automated "
         "integrity checks make the workflow reproducible."
     )
     if len(explanation.split()) > 100:
@@ -467,8 +567,8 @@ def build_outputs(args: argparse.Namespace) -> dict[str, Path]:
             "test_records": int(len(test)),
             "training_valid": int((train[LABEL_COLUMN] == "Valid").sum()),
             "training_invalid": int((train[LABEL_COLUMN] == "Invalid").sum()),
-            "training_exact_duplicate_rows": int(train_duplicate.sum()),
-            "test_exact_duplicate_rows": int(np.asarray(test_classification["duplicated"]).sum()),
+            "training_repeated_condition_rows": int(train_duplicate.sum()),
+            "test_repeated_condition_rows": int(np.asarray(test_classification["duplicated"]).sum()),
             "test_primary_sensor_missing_rows": int(
                 np.asarray(test_classification["primary_missing"]).sum()
             ),
@@ -488,12 +588,15 @@ def build_outputs(args: argparse.Namespace) -> dict[str, Path]:
             "cross_validation": validity_cv,
         },
         "reference_model": {
-            "current_regime_threshold_amperes": 62.0,
+            "production_strategy": PRODUCTION_STRATEGY,
+            "current_regime_threshold_amperes": 64.0,
+            "regularization_alpha": RIDGE_ALPHA,
             "sensor_model_configurations": [
                 {"current_threshold": x, "ambient_hinge": y}
                 for x, y in SENSOR_TARGET_CONFIGS
             ],
             "cross_validation": regression_cv,
+            "all_record_cross_validation": all_record_regression_cv,
         },
         "integrity_checks": {
             "submission_rows_match_test_rows": bool(len(result) == len(test)),
@@ -536,7 +639,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-csv", help="Optional training CSV; use together with --test-csv.")
     parser.add_argument("--test-csv", help="Optional test CSV; use together with --train-csv.")
     parser.add_argument("--sample-csv", help="Optional sample-submission CSV for row ordering.")
-    parser.add_argument("--team-name", default="Team_OogaBooga")
+    parser.add_argument("--team-name", default="OogaBooga")
     parser.add_argument("--output-dir", default="outputs")
     return parser.parse_args()
 

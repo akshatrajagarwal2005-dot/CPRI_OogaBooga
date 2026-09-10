@@ -14,13 +14,13 @@ Place `CPRI_Hackathon_Screening_Dataset_PARTICIPANT.xlsx` beside
 ```bash
 python cpri_solution.py \
   --input-workbook CPRI_Hackathon_Screening_Dataset_PARTICIPANT.xlsx \
-  --team-name Team_OogaBooga \
+  --team-name OogaBooga \
   --output-dir outputs
 ```
 
 The program creates:
 
-- `outputs/Team_OogaBooga.csv` - required predictions and labels
+- `outputs/OogaBooga.csv` - required predictions and labels
 - `outputs/summary.json` - automated Task 03 summary
 - `outputs/model_validation.json` - audit, validation metrics, and integrity checks
 
@@ -31,7 +31,7 @@ python cpri_solution.py \
   --train-csv training_data.csv \
   --test-csv test_data.csv \
   --sample-csv sample_submission.csv \
-  --team-name Team_OogaBooga \
+  --team-name OogaBooga \
   --output-dir outputs
 ```
 
