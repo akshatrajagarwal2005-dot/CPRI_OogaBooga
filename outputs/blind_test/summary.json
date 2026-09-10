@@ -1,0 +1,15 @@
+{
+  "records_analyzed": 250,
+  "abnormal_invalid_records_identified": 40,
+  "predicted_reference_parameter": {
+    "minimum": 11.7891,
+    "maximum": 61.2713,
+    "average": 26.0261
+  },
+  "three_test_ids_requiring_highest_attention": [
+    "SYN-0192",
+    "SYN-0036",
+    "SYN-0228"
+  ],
+  "approach_explanation": "Historical labels were audited for missing primary sensors, exact duplicate measurements and sensor inconsistency. Linear response models learned expected S1-S3 behaviour from Valid tests, separating true operating regimes from sensor faults. Reference predictions use a regime-aware polynomial ensemble trained only on Valid records, with explicit load and high-ambient transitions. Clearly faulty or missing sensors are replaced by expected values before prediction. Grouped ten-fold validation, deterministic settings and automated integrity checks make the workflow reproducible."
+}

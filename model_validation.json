@@ -1,0 +1,83 @@
+{
+  "data_audit": {
+    "training_records": 1000,
+    "test_records": 350,
+    "training_valid": 866,
+    "training_invalid": 134,
+    "training_exact_duplicate_rows": 24,
+    "test_exact_duplicate_rows": 8,
+    "test_primary_sensor_missing_rows": 6,
+    "test_sensor_fault_only_rows": 32,
+    "test_auxiliary_sensor_missing_rows": 11,
+    "test_repaired_primary_sensor_values": 44
+  },
+  "validity_model": {
+    "sensor_residual_threshold": 2.6354078113580512,
+    "training_threshold_gap": {
+      "maximum_valid_score": 1.0441644910322658,
+      "minimum_fault_score": 4.226651131683837
+    },
+    "cross_validation": {
+      "folds": 10,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_invalid": 1.0,
+      "recall_invalid": 1.0,
+      "f1_invalid": 1.0,
+      "matthews_correlation": 1.0,
+      "confusion_matrix_true_valid_invalid": [
+        [
+          866,
+          0
+        ],
+        [
+          0,
+          134
+        ]
+      ]
+    }
+  },
+  "reference_model": {
+    "current_regime_threshold_amperes": 62.0,
+    "sensor_model_configurations": [
+      {
+        "current_threshold": 62.0,
+        "ambient_hinge": 46.3
+      },
+      {
+        "current_threshold": 61.95,
+        "ambient_hinge": 46.3
+      },
+      {
+        "current_threshold": 61.95,
+        "ambient_hinge": 45.9
+      },
+      {
+        "current_threshold": 62.0,
+        "ambient_hinge": 45.9
+      },
+      {
+        "current_threshold": 62.0,
+        "ambient_hinge": 45.0
+      }
+    ],
+    "cross_validation": {
+      "population": "historical Valid records only",
+      "records": 866,
+      "folds": 10,
+      "mae_celsius": 0.19348082517702375,
+      "rmse_celsius": 0.24293571361061478,
+      "r_squared": 0.9994880475830071,
+      "maximum_absolute_error_celsius": 0.9045845657099782,
+      "mean_error_celsius": 0.00023854120413621755
+    }
+  },
+  "integrity_checks": {
+    "submission_rows_match_test_rows": true,
+    "submission_ids_unique": true,
+    "submission_ids_match_test": true,
+    "predictions_all_finite": true,
+    "labels_all_valid_values": true,
+    "summary_explanation_word_count": 74
+  }
+}
