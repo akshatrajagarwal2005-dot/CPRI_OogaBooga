@@ -12,10 +12,10 @@
     "test_repaired_primary_sensor_values": 44
   },
   "validity_model": {
-    "sensor_residual_threshold": 2.6354078113580512,
+    "sensor_residual_threshold": 2.6354078113580486,
     "training_threshold_gap": {
-      "maximum_valid_score": 1.0441644910322658,
-      "minimum_fault_score": 4.226651131683837
+      "maximum_valid_score": 1.0441644910322623,
+      "minimum_fault_score": 4.226651131683835
     },
     "cross_validation": {
       "folds": 10,
@@ -65,11 +65,11 @@
       "population": "historical Valid records only",
       "records": 866,
       "folds": 10,
-      "mae_celsius": 0.19348082517702375,
-      "rmse_celsius": 0.24293571361061478,
-      "r_squared": 0.9994880475830071,
-      "maximum_absolute_error_celsius": 0.9045845657099782,
-      "mean_error_celsius": 0.00023854120413621755
+      "mae_celsius": 0.19431469380811894,
+      "rmse_celsius": 0.24348943881803464,
+      "r_squared": 0.9994857111292662,
+      "maximum_absolute_error_celsius": 0.9374468236088767,
+      "mean_error_celsius": 0.00045607084206348474
     }
   },
   "integrity_checks": {

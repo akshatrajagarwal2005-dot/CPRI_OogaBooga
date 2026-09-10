@@ -221,7 +221,7 @@ def score_predictions(predictions: pd.DataFrame, truth: pd.DataFrame) -> dict[st
 
 
 def main() -> None:
-    project_dir = Path(__file__).resolve().parent
+    project_dir = Path(__file__).resolve().parents[1]
     solution = project_dir / "cpri_solution.py"
     with tempfile.TemporaryDirectory(prefix="cpri-synthetic-") as temporary:
         temporary_dir = Path(temporary)
